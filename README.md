@@ -15,7 +15,7 @@ A Vite + React video meeting client inspired by [livekit-examples/meet](https://
 
 ## Requirements
 
-- Node.js 20 LTS recommended
+- Node.js 22 LTS recommended
 - npm
 - A LiveKit server URL, API key, and API secret
 
