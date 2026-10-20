@@ -1,12 +1,47 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  LiveKitRoom, VideoConference, PreJoin, RoomAudioRenderer,
-  type LocalUserChoices,
+  LiveKitRoom, VideoConference, RoomAudioRenderer,
 } from '@livekit/components-react';
-import { ArrowLeft, ArrowRight, Check, Copy, Link2, LockKeyhole, Radio, ShieldCheck, Video, Wifi } from 'lucide-react';
+import { ArrowRight, Check, Copy, Link2, LockKeyhole, Radio, ShieldCheck, Video, Wifi } from 'lucide-react';
 
 const DEFAULT_URL = import.meta.env.VITE_LIVEKIT_URL ?? '';
+const LIVEKIT_API_KEY = import.meta.env.VITE_LIVEKIT_API_KEY ?? '';
+const LIVEKIT_API_SECRET = import.meta.env.VITE_LIVEKIT_API_SECRET ?? '';
 type Mode = 'join' | 'meeting';
+
+function encodeBase64Url(value: string | Uint8Array): string {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+async function createParticipantToken(roomName: string, participantName: string): Promise<string> {
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    throw new Error('Set VITE_LIVEKIT_API_KEY and VITE_LIVEKIT_API_SECRET in .env.local, then restart Vite.');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const identity = participantName.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-') + '-' + crypto.randomUUID().slice(0, 8);
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const payload = {
+    iss: LIVEKIT_API_KEY,
+    sub: identity,
+    name: participantName.trim(),
+    nbf: now - 10,
+    exp: now + 21600,
+    video: { roomJoin: true, room: roomName.trim(), canPublish: true, canSubscribe: true, canPublishData: true },
+  };
+  const unsignedToken = encodeBase64Url(JSON.stringify(header)) + '.' + encodeBase64Url(JSON.stringify(payload));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(LIVEKIT_API_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(unsignedToken));
+  return unsignedToken + '.' + encodeBase64Url(new Uint8Array(signature));
+}
 
 function newRoomName() {
   return 'meet-' + Math.random().toString(36).slice(2, 8);
@@ -21,7 +56,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [choices, setChoices] = useState<LocalUserChoices | undefined>();
+  const [joining, setJoining] = useState(false);
 
   const validUrl = useMemo(() => /^wss?:\/\//i.test(serverUrl.trim()), [serverUrl]);
 
@@ -33,14 +68,21 @@ export default function App() {
     if (url) setServerUrl(url);
   }, []);
 
-  function join(e: React.FormEvent) {
+  async function join(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     if (!validUrl) { setError('Enter a valid LiveKit WebSocket URL (wss://...).'); return; }
-    if (!token.trim()) { setError('Paste a participant token with permission to join this room.'); return; }
     if (!participantName.trim()) { setError('Enter your display name.'); return; }
     if (!roomName.trim()) { setError('Enter a room name.'); return; }
-    setMode('meeting');
+    setJoining(true);
+    try {
+      setToken(await createParticipantToken(roomName, participantName));
+      setMode('meeting');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create a LiveKit participant token.');
+    } finally {
+      setJoining(false);
+    }
   }
 
   async function copyInvite() {
@@ -69,8 +111,8 @@ export default function App() {
             serverUrl={serverUrl.trim()}
             token={token.trim()}
             connect={true}
-            video={choices?.videoEnabled ?? true}
-            audio={choices?.audioEnabled ?? true}
+            video={true}
+            audio={true}
             onConnected={() => { setConnected(true); setError(''); }}
             onDisconnected={() => { setConnected(false); setMode('join'); }}
             onError={(e) => { setError(e.message || 'Unable to connect to LiveKit.'); setMode('join'); }}
@@ -116,11 +158,9 @@ export default function App() {
             <div className="input-with-icon"><Link2 size={16}/><input id="room" placeholder="team-standup" value={roomName} onChange={e => setRoomName(e.target.value)} /></div>
             <label htmlFor="server">LiveKit server URL</label>
             <input id="server" spellCheck={false} placeholder="wss://your-project.livekit.cloud" value={serverUrl} onChange={e => setServerUrl(e.target.value)} />
-            <label htmlFor="token">Participant token</label>
-            <textarea id="token" spellCheck={false} placeholder="Paste your LiveKit participant JWT…" value={token} onChange={e => setToken(e.target.value)} rows={3}/>
-            <p className="field-hint"><LockKeyhole size={13}/> Token is used in your browser only. Never paste your API secret here.</p>
+            <p className="field-hint"><LockKeyhole size={13}/> A room-scoped participant token is generated in your browser when you continue.</p>
             {error && <div className="form-error" role="alert">{error}</div>}
-            <button className="primary-button" type="submit">Continue to meeting <ArrowRight size={17}/></button>
+            <button className="primary-button" type="submit" disabled={joining}>{joining ? 'Preparing meeting…' : 'Continue to meeting'} <ArrowRight size={17}/></button>
           </form>
           <div className="card-foot"><ShieldCheck size={15}/> Secure connection over WebRTC</div>
         </div>
@@ -135,9 +175,9 @@ export default function App() {
           <div className="feature-list">
             <div className="feature"><span className="feature-icon purple"><Wifi size={17}/></span><div><h3>Low-latency video</h3><p>Real-time audio and video powered by LiveKit.</p></div></div>
             <div className="feature"><span className="feature-icon orange"><ShieldCheck size={17}/></span><div><h3>Direct connection</h3><p>Your browser connects straight to your LiveKit server.</p></div></div>
-            <div className="feature"><span className="feature-icon green"><LockKeyhole size={17}/></span><div><h3>You control access</h3><p>Use a participant token issued by your own trusted system.</p></div></div>
+            <div className="feature"><span className="feature-icon green"><LockKeyhole size={17}/></span><div><h3>Room-scoped access</h3><p>Tokens are generated for the selected room and participant.</p></div></div>
           </div>
-          <div className="setup-note"><div className="note-icon"><ArrowRight size={16}/></div><div><strong>Already have a token?</strong><p>Enter your LiveKit URL and participant JWT to start. Need a token? Use your server-side token generator or LiveKit CLI.</p><a href="https://docs.livekit.io/home/server/generating-tokens/" target="_blank" rel="noreferrer">Token documentation <ArrowRight size={13}/></a></div></div>
+          <div className="setup-note"><div className="note-icon"><ArrowRight size={16}/></div><div><strong>Ready to meet?</strong><p>Set the LiveKit URL, API key, and API secret in your local environment file, then enter a name and room.</p><a href="https://docs.livekit.io/home/server/generating-tokens/" target="_blank" rel="noreferrer">Token documentation <ArrowRight size={13}/></a></div></div>
         </aside>
       </section>
 
