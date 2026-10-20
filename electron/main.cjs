@@ -1,4 +1,4 @@
-const { app, BrowserWindow, session, shell } = require('electron');
+const { app, BrowserWindow, desktopCapturer, dialog, session, shell } = require('electron');
 const path = require('node:path');
 
 const isDev = !app.isPackaged;
@@ -56,6 +56,40 @@ app.whenReady().then(() => {
       return;
     }
     callback(false);
+  });
+
+  // Show a native source chooser before sharing a screen or application window.
+  session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 0, height: 0 },
+      });
+      if (sources.length === 0) {
+        callback({});
+        return;
+      }
+
+      const buttons = sources.map((source) => source.name).concat('Cancel');
+      const result = await dialog.showMessageBox(BrowserWindow.getFocusedWindow(), {
+        type: 'question',
+        title: 'Share your screen',
+        message: 'Choose a screen or application window to share.',
+        buttons,
+        cancelId: buttons.length - 1,
+        defaultId: 0,
+        noLink: true,
+      });
+      const source = sources[result.response];
+      if (!source || result.response === buttons.length - 1) {
+        callback({});
+        return;
+      }
+      callback({ video: source });
+    } catch (error) {
+      console.error('Could not open screen-share source chooser:', error);
+      callback({});
+    }
   });
 
   createWindow();
